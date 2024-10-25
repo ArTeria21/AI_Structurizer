@@ -5,10 +5,11 @@ from typing import Iterator
 # Preprocessing text
 import nltk
 from nltk.tokenize import sent_tokenize
+from translatepy.translators.yandex import YandexTranslate
 
 # Parsing text from documents
 from unstructured.partition.auto import partition
-from tika import parser
+import fitz 
 import pandas as pd
 import docx
 
@@ -27,6 +28,7 @@ class Manager:
         self.agent = Agent(output_folder=self.output_folder)
         nltk.download('punkt', quiet=True)  # Загружаем необходимые данные для токенизации
         self.logger.debug("Manager initialized successfully")
+        self.translator = YandexTranslate()
     
     @property
     def input_folder(self) -> str:
@@ -47,6 +49,42 @@ class Manager:
         if not os.path.isdir(path):
             os.mkdir(path)
         self._output_folder = path
+
+    def translate_text_to_english(self, text: str) -> str:
+        translated_text = ''
+        sentance_amount = 6
+        # Разделим текст на предложения
+        sentences = text.split('. ')
+        
+        for start in range(0, len(sentences), sentance_amount):
+            chunk = ' '.join(sentences[start:start + sentance_amount])
+            
+            try:
+                translated_chunk = str(self.translator.translate(chunk, destination_language='EN'))
+                if translated_chunk:
+                    translated_text += translated_chunk + ' '
+                else:
+                    self.logger.warning(f"Translation returned empty for chunk: {chunk}")
+            except Exception as e:
+                self.logger.error(f"Error during translation of chunk: {e}")
+                continue
+        
+        if not translated_text.strip():
+            self.logger.error("Translation returned empty text.")
+            raise ValueError("Failed to translate text to English")
+        return translated_text.strip()
+    
+    def extract_text_from_pdf(self, file_path: str) -> str:
+        text = ''
+        try:
+            with fitz.open(file_path) as pdf:
+                for page_num in range(pdf.page_count):
+                    page = pdf[page_num]
+                    text += page.get_text("text")  # Извлечение текста в виде строки
+        except Exception as e:
+            self.logger.error(f"Failed to extract text from PDF {file_path}: {e}")
+            raise ValueError(f"Error processing file {file_path}: {e}")
+        return text
     
     def extract_text(self, file_path: str) -> str:
         self.logger.debug(f"Extracting text from {file_path}")
@@ -64,8 +102,7 @@ class Manager:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     text = f.read()
             elif file_extension == '.pdf':
-                raw = parser.from_file(file_path)
-                text = raw.get('content', '')
+                text = self.extract_text_from_pdf(file_path)
             elif file_extension == '.docx':
                 doc = docx.Document(file_path)
                 text = '\n'.join([para.text for para in doc.paragraphs])
@@ -80,7 +117,7 @@ class Manager:
             raise ValueError(f"Error processing file {file_path}: {e}")
         
         self.logger.debug(f"Extracted text length from {file_path}: {len(text)} characters")
-        return text
+        return self.translate_text_to_english(text)
     
     def get_list_of_files(self) -> list:
         self.logger.debug("Listing files for processing")
