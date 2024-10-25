@@ -1,5 +1,10 @@
 import os
+import logging
 from typing import Iterator
+
+# Preprocessing text
+import nltk
+from nltk.tokenize import sent_tokenize
 
 # Parsing text from documents
 from unstructured.partition.auto import partition
@@ -7,14 +12,22 @@ from tika import parser
 import pandas as pd
 import docx
 
+# Interaction with LLM
+from .llm_agent import Agent
+
 class Manager:
-    avalable_for_processing_extensions = ('.txt', '.csv', '.pdf', '.md', '.docx')
-    def __init__(self, input_folder: str, output_folder: str, agent, batch_size: int = 8000) -> None:
+    available_for_processing_extensions = ('.txt', '.csv', '.pdf', '.md', '.docx')
+    
+    def __init__(self, input_folder: str, output_folder: str, batch_size: int = 12000) -> None:
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.debug("Initializing Manager")
         self.input_folder = input_folder
         self.output_folder = output_folder
-        self.agent = agent
         self.batch_size = batch_size
-
+        self.agent = Agent(output_folder=self.output_folder)
+        nltk.download('punkt', quiet=True)  # Загружаем необходимые данные для токенизации
+        self.logger.debug("Manager initialized successfully")
+    
     @property
     def input_folder(self) -> str:
         return self._input_folder
@@ -24,7 +37,7 @@ class Manager:
         if not os.path.isdir(path):
             raise ValueError(f"'{path}' is not a valid directory")
         self._input_folder = path
-
+    
     @property
     def output_folder(self) -> str:
         return self._output_folder
@@ -34,12 +47,13 @@ class Manager:
         if not os.path.isdir(path):
             os.mkdir(path)
         self._output_folder = path
-
+    
     def extract_text(self, file_path: str) -> str:
+        self.logger.debug(f"Extracting text from {file_path}")
         if not os.path.isfile(file_path):
-            raise ValueError(f"'{file_path}' is not exists")
+            raise ValueError(f"'{file_path}' does not exist")
         
-        if not file_path.endswith(self.avalable_for_processing_extensions):
+        if not file_path.endswith(self.available_for_processing_extensions):
             raise ValueError(f"'{file_path}' is not supported")
         
         file_extension = os.path.splitext(file_path)[1].lower()
@@ -51,30 +65,59 @@ class Manager:
                     text = f.read()
             elif file_extension == '.pdf':
                 raw = parser.from_file(file_path)
-                text = raw['content']
-            elif file_extension in ['.docx']:
+                text = raw.get('content', '')
+            elif file_extension == '.docx':
                 doc = docx.Document(file_path)
                 text = '\n'.join([para.text for para in doc.paragraphs])
             elif file_extension == '.csv':
                 df = pd.read_csv(file_path)
                 text = df.to_string()
-            elif file_extension in ['.xls', '.xlsx']:
-                df = pd.read_excel(file_path)
-                text = df.to_string()
             else:
                 elements = partition(filename=file_path)
                 text = '\n'.join([str(el) for el in elements])
         except Exception as e:
+            self.logger.error(f"Error processing file {file_path}: {e}")
             raise ValueError(f"Error processing file {file_path}: {e}")
-
+        
+        self.logger.debug(f"Extracted text length from {file_path}: {len(text)} characters")
         return text
     
     def get_list_of_files(self) -> list:
-        return [self.input_folder + '/' + f for f in os.listdir(self.input_folder) 
-                if not f.startswith('.') 
-                and f.endswith(self.avalable_for_processing_extensions)]
+        self.logger.debug("Listing files for processing")
+        return [
+            os.path.join(self.input_folder, f) for f in os.listdir(self.input_folder) 
+            if not f.startswith('.') 
+            and f.endswith(self.available_for_processing_extensions)
+        ]
     
-    def iterate_by_file(self, file_path: str) -> Iterator:
+    def iterate_by_file(self, file_path: str) -> Iterator[str]:
+        self.logger.debug(f"Iterating over file: {file_path}")
         text = self.extract_text(file_path)
-        for i in range(0, len(text), self.batch_size):
-            yield text[i:i+self.batch_size]
+        sentences = sent_tokenize(text)
+        current_chunk = ''
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) + 1 <= self.batch_size:
+                if current_chunk:
+                    current_chunk += ' ' + sentence
+                else:
+                    current_chunk = sentence
+            else:
+                yield current_chunk.strip()
+                current_chunk = sentence
+        if current_chunk:
+            yield current_chunk.strip()
+    
+    def process_files(self) -> None:
+        self.logger.info("Starting to process files")
+        files = self.get_list_of_files()
+        if not files:
+            self.logger.warning("No files found for processing")
+            return
+        for file_path in files:
+            self.logger.info(f"Processing file: {file_path}")
+            try:
+                for chunk in self.iterate_by_file(file_path):
+                    self.logger.debug(f"Processing chunk of size {len(chunk)}")
+                    self.agent.process_text(text=chunk)
+            except Exception as e:
+                self.logger.error(f"Failed to process {file_path}: {e}")

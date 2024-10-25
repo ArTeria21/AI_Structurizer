@@ -1,0 +1,12 @@
+The following response is not in the expected format. Please correct it to match the required JSON format.
+
+Expected format:
+{format_instructions}
+
+Original response:
+{completion}
+
+Error:
+{error}
+
+RETURN ME THE RESPONSE IN CORRECT JSON FORMAT! CHECK THAT ALL TEXT MUST BE WRITTEN IN ENGLISH!

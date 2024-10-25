@@ -1,4 +1,5 @@
-srtuctured
-unstructured
+structured/*
+unstructured/*
 __pycache__
 .env
+*.log
